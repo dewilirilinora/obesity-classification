@@ -4,10 +4,10 @@ import numpy as np
 import pickle
 
 # =============================
-# CONFIG
+# KONFIGURASI HALAMAN
 # =============================
 st.set_page_config(
-    page_title="Clinical Obesity Risk Assessment",
+    page_title="Sistem Penilaian Risiko Obesitas Klinis",
     page_icon="🏥",
     layout="centered"
 )
@@ -27,55 +27,48 @@ binary_cat = data["binary_cat"]
 multi_cat = data["multi_cat"]
 
 # =============================
-# BMI CATEGORY
+# FUNGSI KATEGORI BMI
 # =============================
 def kategori_bmi(bmi):
     if bmi < 18.5:
-        return "Underweight"
+        return "Berat Badan Kurang"
     elif bmi < 25:
         return "Normal"
     elif bmi < 30:
-        return "Overweight"
+        return "Kelebihan Berat Badan (Overweight)"
     else:
-        return "Obese"
+        return "Obesitas"
 
 # =============================
-# LIFESTYLE RISK SCORE
+# FUNGSI SKOR RISIKO GAYA HIDUP
 # =============================
-def lifestyle_score(data):
+def skor_gaya_hidup(data):
     score = 0
-    
-    # Aktivitas fisik (protective)
+
     if data["FAF"] >= 2:
         score -= 1
     else:
         score += 1
 
-    # Konsumsi sayur
     if data["FCVC"] >= 2:
         score -= 1
     else:
         score += 1
 
-    # Air minum
     if data["CH2O"] >= 2:
         score -= 1
     else:
         score += 1
 
-    # Makanan tinggi kalori
     if data["FAVC"] == "yes":
         score += 1
 
-    # Alkohol
     if data["CALC"] in ["Frequently", "Always"]:
         score += 1
 
-    # Riwayat keluarga
     if data["family_history_with_overweight"] == "yes":
         score += 1
 
-    # Monitoring kalori
     if data["SCC"] == "yes":
         score -= 1
 
@@ -87,9 +80,9 @@ def lifestyle_score(data):
         return "Tinggi"
 
 # =============================
-# PREDICTION FUNCTION
+# FUNGSI PREDIKSI
 # =============================
-def predict(data):
+def prediksi(data):
     df = pd.DataFrame([data])
     df["BMI"] = df["Weight"] / (df["Height"] ** 2)
 
@@ -107,33 +100,36 @@ def predict(data):
     idx = np.argmax(proba)
     diagnosis = le_target.inverse_transform([idx])[0]
 
+    # Rapikan nama kelas
+    diagnosis = diagnosis.replace("_", " ")
+
     return diagnosis, proba[idx], df["BMI"].iloc[0]
 
 # =============================
-# UI
+# ANTARMUKA
 # =============================
-st.title("🏥 Clinical Obesity Risk Assessment")
-st.markdown("Sistem Evaluasi Risiko Obesitas Berbasis Machine Learning")
+st.title("🏥 Sistem Penilaian Risiko Obesitas Klinis")
+st.markdown("Evaluasi Risiko Obesitas Berbasis Machine Learning dan Faktor Gaya Hidup")
 
-st.subheader("Data Pasien")
+st.subheader("Input Data Pasien")
 
 gender = st.selectbox("Jenis Kelamin", ["Male", "Female"])
-age = st.number_input("Usia", 10, 80, 25)
+age = st.number_input("Usia (tahun)", 10, 80, 25)
 height = st.number_input("Tinggi Badan (meter)", 1.0, 2.5, 1.70)
 weight = st.number_input("Berat Badan (kg)", 30.0, 200.0, 70.0)
 
-fcvc = st.slider("Konsumsi Sayur (1-3)", 1, 3, 2)
-ncp = st.slider("Makan Utama per Hari (1-4)", 1, 4, 3)
-ch2o = st.slider("Konsumsi Air (1-3)", 1, 3, 2)
-faf = st.slider("Aktivitas Fisik (0-3)", 0, 3, 1)
-tue = st.slider("Penggunaan Teknologi (0-3)", 0, 3, 1)
+fcvc = st.slider("Konsumsi Sayur (1 = rendah, 3 = tinggi)", 1, 3, 2)
+ncp = st.slider("Jumlah Makan Utama per Hari", 1, 4, 3)
+ch2o = st.slider("Konsumsi Air (1 = rendah, 3 = tinggi)", 1, 3, 2)
+faf = st.slider("Tingkat Aktivitas Fisik (0 = rendah, 3 = tinggi)", 0, 3, 1)
+tue = st.slider("Penggunaan Perangkat Teknologi (0-3)", 0, 3, 1)
 
 family = st.selectbox("Riwayat Keluarga Obesitas", ["yes", "no"])
-favc = st.selectbox("Sering Makan Tinggi Kalori", ["yes", "no"])
-caec = st.selectbox("Ngemil", ["Sometimes", "Frequently", "Always", "no"])
+favc = st.selectbox("Sering Konsumsi Makanan Tinggi Kalori", ["yes", "no"])
+caec = st.selectbox("Kebiasaan Ngemil", ["Sometimes", "Frequently", "Always", "no"])
 calc = st.selectbox("Konsumsi Alkohol", ["Sometimes", "Frequently", "Always", "no"])
-mtrans = st.selectbox("Transportasi", ["Public_Transportation", "Walking", "Automobile", "Motorbike", "Bike"])
-scc = st.selectbox("Monitoring Kalori", ["yes", "no"])
+mtrans = st.selectbox("Moda Transportasi Harian", ["Public_Transportation", "Walking", "Automobile", "Motorbike", "Bike"])
+scc = st.selectbox("Melakukan Monitoring Kalori", ["yes", "no"])
 
 if st.button("Analisis Risiko"):
 
@@ -155,29 +151,26 @@ if st.button("Analisis Risiko"):
         "SCC": scc
     }
 
-    diagnosis, confidence, bmi = predict(input_data)
-    lifestyle = lifestyle_score(input_data)
+    diagnosis, confidence, bmi = prediksi(input_data)
+    lifestyle = skor_gaya_hidup(input_data)
     bmi_cat = kategori_bmi(bmi)
 
     st.markdown("---")
     st.header("📋 Laporan Evaluasi Kesehatan")
 
-    st.write(f"**BMI:** {bmi:.2f}")
+    st.write(f"**Indeks Massa Tubuh (BMI):** {bmi:.2f}")
     st.write(f"**Kategori BMI:** {bmi_cat}")
     st.write(f"**Skor Risiko Gaya Hidup:** {lifestyle}")
-    st.write(f"**Prediksi Machine Learning:** {diagnosis}")
-    st.write(f"**Probabilitas:** {confidence:.2%}")
+    st.write(f"**Prediksi Model Machine Learning:** {diagnosis}")
+    st.write(f"**Tingkat Keyakinan Model:** {confidence:.2%}")
 
-    st.markdown("### 🧾 Penilaian Terintegrasi")
+    st.markdown("### 🧾 Kesimpulan Klinis")
 
-    if bmi_cat == "Overweight" and lifestyle == "Rendah":
-        st.info("Meskipun BMI menunjukkan overweight, pola gaya hidup relatif sehat. Kemungkinan komposisi tubuh dipengaruhi massa otot. Disarankan evaluasi komposisi tubuh lanjutan.")
-    elif bmi_cat == "Overweight" and lifestyle != "Rendah":
-        st.warning("BMI dan faktor gaya hidup menunjukkan peningkatan risiko metabolik. Disarankan intervensi pola makan dan aktivitas fisik.")
-    elif bmi_cat == "Obese":
-        st.error("Risiko obesitas tinggi. Disarankan konsultasi medis dan intervensi segera.")
+    if bmi_cat == "Kelebihan Berat Badan (Overweight)" and lifestyle == "Rendah":
+        st.info("Meskipun BMI menunjukkan kelebihan berat badan, pola gaya hidup tergolong baik. Risiko metabolik relatif rendah. Disarankan evaluasi komposisi tubuh lebih lanjut.")
+    elif bmi_cat == "Kelebihan Berat Badan (Overweight)" and lifestyle != "Rendah":
+        st.warning("BMI dan pola gaya hidup menunjukkan peningkatan risiko metabolik. Disarankan perbaikan pola makan dan peningkatan aktivitas fisik.")
+    elif bmi_cat == "Obesitas":
+        st.error("Risiko obesitas tinggi. Disarankan konsultasi medis dan intervensi gaya hidup segera.")
     else:
         st.success("Status berat badan dalam batas normal. Pertahankan gaya hidup sehat.")
-
-    st.markdown("---")
-    st.caption("Developed for Undergraduate Thesis - 2026")
