@@ -2,6 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
+import shap
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 
 # =============================
 # KONFIGURASI HALAMAN
@@ -25,6 +29,15 @@ le_target = data["le_target"]
 numerical_features = data["numerical_features"]
 binary_cat = data["binary_cat"]
 multi_cat = data["multi_cat"]
+
+# =============================
+# LOAD EXPLAINER (sekali saja)
+# =============================
+@st.cache_resource
+def load_explainer():
+    return shap.TreeExplainer(model)
+
+explainer = load_explainer()
 
 # =============================
 # FUNGSI KATEGORI BMI
@@ -98,12 +111,38 @@ def prediksi(data):
 
     proba = model.predict_proba(X_scaled)[0]
     idx = np.argmax(proba)
-    diagnosis = le_target.inverse_transform([idx])[0]
 
-    # Rapikan nama kelas
-    diagnosis = diagnosis.replace("_", " ")
+    return df["BMI"].iloc[0], X_scaled, idx
 
-    return diagnosis, proba[idx], df["BMI"].iloc[0]
+# =============================
+# FUNGSI SHAP PLOT
+# =============================
+def get_shap_plot(X_scaled, predicted_class_idx):
+    # Susun nama fitur
+    feature_names_num = numerical_features
+    feature_names_binary = binary_cat
+    feature_names_multi = list(ohe.get_feature_names_out(multi_cat))
+    all_feature_names = feature_names_num + feature_names_binary + feature_names_multi
+
+    # Buat DataFrame
+    X_df = pd.DataFrame(X_scaled, columns=all_feature_names)
+
+    # Hitung SHAP values
+    shap_vals = explainer.shap_values(X_df)
+
+    # Buat Explanation object untuk kelas yang diprediksi
+    exp = shap.Explanation(
+        values=shap_vals[predicted_class_idx][0],
+        base_values=explainer.expected_value[predicted_class_idx],
+        data=X_df.iloc[0].values,
+        feature_names=all_feature_names
+    )
+
+    # Buat plot
+    fig, ax = plt.subplots(figsize=(10, 7))
+    shap.plots.waterfall(exp, show=False)
+    plt.tight_layout()
+    return fig
 
 # =============================
 # ANTARMUKA
@@ -151,19 +190,38 @@ if st.button("Analisis Risiko"):
         "SCC": scc
     }
 
-    diagnosis, confidence, bmi = prediksi(input_data)
+    bmi, X_scaled, predicted_idx = prediksi(input_data)
     lifestyle = skor_gaya_hidup(input_data)
     bmi_cat = kategori_bmi(bmi)
 
     st.markdown("---")
     st.header("📋 Laporan Evaluasi Kesehatan")
 
+    # ── BMI mencakup prediksi ──
     st.write(f"**Indeks Massa Tubuh (BMI):** {bmi:.2f}")
     st.write(f"**Kategori BMI:** {bmi_cat}")
     st.write(f"**Skor Risiko Gaya Hidup:** {lifestyle}")
-    st.write(f"**Prediksi Model Machine Learning:** {diagnosis}")
-    st.write(f"**Tingkat Keyakinan Model:** {confidence:.2%}")
 
+    # ── SHAP ──
+    st.markdown("### 🔍 Analisis Faktor Risiko (SHAP)")
+    st.caption("Grafik berikut menunjukkan faktor-faktor yang mempengaruhi prediksi model")
+
+    with st.spinner("Menghitung analisis SHAP..."):
+        try:
+            fig = get_shap_plot(X_scaled, predicted_idx)
+            st.pyplot(fig)
+            plt.close()
+
+            st.caption("""
+            📌 **Cara membaca grafik:**
+            - 🔴 **Merah (+)** = Faktor yang mendorong ke arah prediksi ini
+            - 🔵 **Biru (-)** = Faktor yang mengurangi risiko prediksi ini
+            - Semakin panjang bar = semakin besar pengaruhnya
+            """)
+        except Exception as e:
+            st.warning(f"SHAP tidak dapat ditampilkan: {e}")
+
+    # ── Kesimpulan Klinis ──
     st.markdown("### 🧾 Kesimpulan Klinis")
 
     if bmi_cat == "Kelebihan Berat Badan (Overweight)" and lifestyle == "Rendah":
