@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
+import joblib
 import shap
 import matplotlib.pyplot as plt
 import matplotlib
@@ -19,23 +19,22 @@ st.set_page_config(
 # =============================
 # LOAD MODEL
 # =============================
-with open("model_obesitas.pkl", "rb") as f:
-    data = pickle.load(f)
+data = joblib.load("model_obesitas.joblib")
 
-model = data["model"] if "model" in data else data["model2"]
-scaler = data["scaler"]
-ohe = data["ohe"]
-le_target = data["le_target"]
-numerical_features = data["numerical_features"]
-binary_cat = data["binary_cat"]
-multi_cat = data["multi_cat"]
+model        = data["model"]           # pipeline (preprocess + clf)
+le_target    = data["le_target"]
+cat_features = data["categorical_features"]
+num_features = data["numerical_features"]
+
+xgb_model    = model.named_steps["clf"]
+preprocessor = model.named_steps["preprocess"]
 
 # =============================
 # LOAD EXPLAINER (sekali saja)
 # =============================
 @st.cache_resource
 def load_explainer():
-    return shap.TreeExplainer(model)
+    return shap.TreeExplainer(xgb_model)
 
 explainer = load_explainer()
 
@@ -55,34 +54,34 @@ def kategori_bmi(bmi):
 # =============================
 # FUNGSI SKOR RISIKO GAYA HIDUP
 # =============================
-def skor_gaya_hidup(data):
+def skor_gaya_hidup(d):
     score = 0
 
-    if data["FAF"] >= 2:
+    if d["FAF"] >= 2:
         score -= 1
     else:
         score += 1
 
-    if data["FCVC"] >= 2:
+    if d["FCVC"] >= 2:
         score -= 1
     else:
         score += 1
 
-    if data["CH2O"] >= 2:
+    if d["CH2O"] >= 2:
         score -= 1
     else:
         score += 1
 
-    if data["FAVC"] == "yes":
+    if d["FAVC"] == "yes":
         score += 1
 
-    if data["CALC"] in ["Frequently", "Always"]:
+    if d["CALC"] in ["Frequently", "Always"]:
         score += 1
 
-    if data["family_history_with_overweight"] == "yes":
+    if d["family_history_with_overweight"] == "yes":
         score += 1
 
-    if data["SCC"] == "yes":
+    if d["SCC"] == "yes":
         score -= 1
 
     if score <= -1:
@@ -95,51 +94,44 @@ def skor_gaya_hidup(data):
 # =============================
 # FUNGSI PREDIKSI
 # =============================
-def prediksi(data):
-    df = pd.DataFrame([data])
-    df["BMI"] = df["Weight"] / (df["Height"] ** 2)
+def prediksi(d):
+    df = pd.DataFrame([d])
+    bmi = df["Weight"].iloc[0] / (df["Height"].iloc[0] ** 2)
 
-    X_num = df[numerical_features].values
-    X_binary = np.array([
-        1 if df[col].values[0] in ["yes", "Male"] else 0
-        for col in binary_cat
-    ]).reshape(1, -1)
-    X_multi = ohe.transform(df[multi_cat])
+    # Kolom sesuai urutan pipeline
+    X = df[cat_features + num_features]
 
-    X_final = np.hstack([X_num, X_binary, X_multi])
-    X_scaled = scaler.transform(X_final)
+    # Transform pakai preprocessor dari pipeline
+    X_transformed = preprocessor.transform(X)
 
-    proba = model.predict_proba(X_scaled)[0]
-    idx = np.argmax(proba)
+    # Ambil nama fitur hasil OHE
+    ohe       = preprocessor.named_transformers_["cat"]
+    ohe_names = list(ohe.get_feature_names_out(cat_features))
+    all_names = ohe_names + num_features
 
-    return df["BMI"].iloc[0], X_scaled, idx
+    # Buat DataFrame untuk SHAP
+    X_df = pd.DataFrame(X_transformed, columns=all_names)
+
+    # Prediksi
+    proba = xgb_model.predict_proba(X_df)[0]
+    idx   = int(np.argmax(proba))
+
+    return bmi, X_df, idx
 
 # =============================
 # FUNGSI SHAP PLOT
 # =============================
-def get_shap_plot(X_scaled, predicted_class_idx):
-    # Susun nama fitur
-    feature_names_num = numerical_features
-    feature_names_binary = binary_cat
-    feature_names_multi = list(ohe.get_feature_names_out(multi_cat))
-    all_feature_names = feature_names_num + feature_names_binary + feature_names_multi
-
-    # Buat DataFrame
-    X_df = pd.DataFrame(X_scaled, columns=all_feature_names)
-
-    # Hitung SHAP values
+def get_shap_plot(X_df, predicted_class_idx):
     shap_vals = explainer.shap_values(X_df)
 
-    # Buat Explanation object untuk kelas yang diprediksi
     exp = shap.Explanation(
-        values=shap_vals[predicted_class_idx][0],
-        base_values=explainer.expected_value[predicted_class_idx],
-        data=X_df.iloc[0].values,
-        feature_names=all_feature_names
+        values        = shap_vals[predicted_class_idx][0],
+        base_values   = explainer.expected_value[predicted_class_idx],
+        data          = X_df.iloc[0].values,
+        feature_names = X_df.columns.tolist()
     )
 
-    # Buat plot
-    fig, ax = plt.subplots(figsize=(10, 7))
+    fig, _ = plt.subplots(figsize=(10, 7))
     shap.plots.waterfall(exp, show=False)
     plt.tight_layout()
     return fig
@@ -152,52 +144,53 @@ st.markdown("Evaluasi Risiko Obesitas Berbasis Machine Learning dan Faktor Gaya 
 
 st.subheader("Input Data Pasien")
 
-gender = st.selectbox("Jenis Kelamin", ["Male", "Female"])
-age = st.number_input("Usia (tahun)", 10, 80, 25)
-height = st.number_input("Tinggi Badan (meter)", 1.0, 2.5, 1.70)
-weight = st.number_input("Berat Badan (kg)", 30.0, 200.0, 70.0)
+gender  = st.selectbox("Jenis Kelamin", ["Male", "Female"])
+age     = st.number_input("Usia (tahun)", 10, 80, 25)
+height  = st.number_input("Tinggi Badan (meter)", 1.0, 2.5, 1.70)
+weight  = st.number_input("Berat Badan (kg)", 30.0, 200.0, 70.0)
 
 fcvc = st.slider("Konsumsi Sayur (1 = rendah, 3 = tinggi)", 1, 3, 2)
-ncp = st.slider("Jumlah Makan Utama per Hari", 1, 4, 3)
+ncp  = st.slider("Jumlah Makan Utama per Hari", 1, 4, 3)
 ch2o = st.slider("Konsumsi Air (1 = rendah, 3 = tinggi)", 1, 3, 2)
-faf = st.slider("Tingkat Aktivitas Fisik (0 = rendah, 3 = tinggi)", 0, 3, 1)
-tue = st.slider("Penggunaan Perangkat Teknologi (0-3)", 0, 3, 1)
+faf  = st.slider("Tingkat Aktivitas Fisik (0 = rendah, 3 = tinggi)", 0, 3, 1)
+tue  = st.slider("Penggunaan Perangkat Teknologi (0-3)", 0, 3, 1)
 
 family = st.selectbox("Riwayat Keluarga Obesitas", ["yes", "no"])
-favc = st.selectbox("Sering Konsumsi Makanan Tinggi Kalori", ["yes", "no"])
-caec = st.selectbox("Kebiasaan Ngemil", ["Sometimes", "Frequently", "Always", "no"])
-calc = st.selectbox("Konsumsi Alkohol", ["Sometimes", "Frequently", "Always", "no"])
+favc   = st.selectbox("Sering Konsumsi Makanan Tinggi Kalori", ["yes", "no"])
+smoke  = st.selectbox("Merokok", ["yes", "no"])
+caec   = st.selectbox("Kebiasaan Ngemil", ["Sometimes", "Frequently", "Always", "no"])
+calc   = st.selectbox("Konsumsi Alkohol", ["Sometimes", "Frequently", "Always", "no"])
 mtrans = st.selectbox("Moda Transportasi Harian", ["Public_Transportation", "Walking", "Automobile", "Motorbike", "Bike"])
-scc = st.selectbox("Melakukan Monitoring Kalori", ["yes", "no"])
+scc    = st.selectbox("Melakukan Monitoring Kalori", ["yes", "no"])
 
 if st.button("Analisis Risiko"):
 
     input_data = {
-        "Gender": gender,
-        "Age": age,
-        "Height": height,
-        "Weight": weight,
-        "FCVC": fcvc,
-        "NCP": ncp,
-        "CH2O": ch2o,
-        "FAF": faf,
-        "TUE": tue,
+        "Gender"                        : gender,
         "family_history_with_overweight": family,
-        "FAVC": favc,
-        "CAEC": caec,
-        "CALC": calc,
-        "MTRANS": mtrans,
-        "SCC": scc
+        "FAVC"                          : favc,
+        "CAEC"                          : caec,
+        "SMOKE"                         : smoke,
+        "SCC"                           : scc,
+        "CALC"                          : calc,
+        "MTRANS"                        : mtrans,
+        "Age"                           : age,
+        "Height"                        : height,
+        "Weight"                        : weight,
+        "FCVC"                          : fcvc,
+        "NCP"                           : ncp,
+        "CH2O"                          : ch2o,
+        "FAF"                           : faf,
+        "TUE"                           : tue
     }
 
-    bmi, X_scaled, predicted_idx = prediksi(input_data)
+    bmi, X_df, predicted_idx = prediksi(input_data)
     lifestyle = skor_gaya_hidup(input_data)
-    bmi_cat = kategori_bmi(bmi)
+    bmi_cat   = kategori_bmi(bmi)
 
     st.markdown("---")
     st.header("📋 Laporan Evaluasi Kesehatan")
 
-    # ── BMI mencakup prediksi ──
     st.write(f"**Indeks Massa Tubuh (BMI):** {bmi:.2f}")
     st.write(f"**Kategori BMI:** {bmi_cat}")
     st.write(f"**Skor Risiko Gaya Hidup:** {lifestyle}")
@@ -208,7 +201,7 @@ if st.button("Analisis Risiko"):
 
     with st.spinner("Menghitung analisis SHAP..."):
         try:
-            fig = get_shap_plot(X_scaled, predicted_idx)
+            fig = get_shap_plot(X_df, predicted_idx)
             st.pyplot(fig)
             plt.close()
 
