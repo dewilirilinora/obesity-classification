@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import pickle
 import shap
 import matplotlib.pyplot as plt
 import matplotlib
@@ -19,7 +19,8 @@ st.set_page_config(
 # =============================
 # LOAD MODEL
 # =============================
-data = joblib.load("model_obesitas.joblib")
+with open("model_obesitas.pkl", "rb") as f:
+    data = pickle.load(f)
 
 model        = data["model"]           # pipeline (preprocess + clf)
 le_target    = data["le_target"]
