@@ -1,8 +1,12 @@
+Kode
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
 import shap
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 
 # =============================
 # KONFIGURASI HALAMAN
@@ -28,7 +32,7 @@ xgb_model    = model.named_steps["clf"]
 preprocessor = model.named_steps["preprocess"]
 
 # =============================
-# LOAD SHAP EXPLAINER
+# LOAD EXPLAINER (sekali saja)
 # =============================
 @st.cache_resource
 def load_explainer():
@@ -37,7 +41,7 @@ def load_explainer():
 explainer = load_explainer()
 
 # =============================
-# BMI
+# FUNGSI KATEGORI BMI
 # =============================
 def kategori_bmi(bmi):
     if bmi < 18.5:
@@ -50,14 +54,25 @@ def kategori_bmi(bmi):
         return "Obesitas"
 
 # =============================
-# SKOR GAYA HIDUP (RULE-BASED)
+# FUNGSI SKOR RISIKO GAYA HIDUP
 # =============================
 def skor_gaya_hidup(d):
     score = 0
 
-    score += -1 if d["FAF"] >= 2 else 1
-    score += -1 if d["FCVC"] >= 2 else 1
-    score += -1 if d["CH2O"] >= 2 else 1
+    if d["FAF"] >= 2:
+        score -= 1
+    else:
+        score += 1
+
+    if d["FCVC"] >= 2:
+        score -= 1
+    else:
+        score += 1
+
+    if d["CH2O"] >= 2:
+        score -= 1
+    else:
+        score += 1
 
     if d["FAVC"] == "yes":
         score += 1
@@ -79,17 +94,16 @@ def skor_gaya_hidup(d):
         return "Tinggi"
 
 # =============================
-# PREDIKSI
+# FUNGSI PREDIKSI
 # =============================
 def prediksi(d):
     df = pd.DataFrame([d])
-
     bmi = df["Weight"].iloc[0] / (df["Height"].iloc[0] ** 2)
 
     X = df[cat_features + num_features]
     X_transformed = preprocessor.transform(X)
 
-    ohe = preprocessor.named_transformers_["cat"]
+    ohe       = preprocessor.named_transformers_["cat"]
     ohe_names = list(ohe.get_feature_names_out(cat_features))
     all_names = ohe_names + num_features
 
@@ -101,130 +115,163 @@ def prediksi(d):
     return bmi, X_df, idx
 
 # =============================
-# SHAP - TOP LIFESTYLE FACTORS
+# FUNGSI TOP FAKTOR GAYA HIDUP
 # =============================
 def get_top_factors(X_df, predicted_class_idx, top_n=3):
+    shap_vals = explainer.shap_values(X_df)
 
-    shap_vals = explainer(X_df)
-    sv = shap_vals.values[0, :, predicted_class_idx]
+    if isinstance(shap_vals, list):
+        sv = shap_vals[predicted_class_idx][0]
+    else:
+        sv = shap_vals[0, :, predicted_class_idx]
 
-    shap_df = pd.DataFrame({
-        "fitur": X_df.columns,
-        "shap": sv
-    })
-
-    # 🔥 SORT GLOBAL DULU
-    shap_df["abs_shap"] = shap_df["shap"].abs()
-    shap_df = shap_df.sort_values("abs_shap", ascending=False)
-
-    # 🔥 FILTER LIFESTYLE (SETELAH SORT)
-    lifestyle_keywords = [
-        "FCVC","NCP","CH2O","FAF","TUE",
-        "FAVC","CAEC","SMOKE","SCC","CALC","MTRANS"
+    # Hanya fitur gaya hidup — tanpa Weight, Height, Age, Gender
+    lifestyle_features = [
+        "FCVC", "NCP", "CH2O", "FAF", "TUE",
+        "FAVC_yes", "FAVC_no",
+        "CAEC_Sometimes", "CAEC_Frequently", "CAEC_Always", "CAEC_no",
+        "SMOKE_yes", "SMOKE_no",
+        "SCC_yes", "SCC_no",
+        "CALC_Sometimes", "CALC_Frequently", "CALC_Always", "CALC_no",
+        "MTRANS_Public_Transportation", "MTRANS_Walking",
+        "MTRANS_Automobile", "MTRANS_Motorbike", "MTRANS_Bike",
+        "family_history_with_overweight_yes",
+        "family_history_with_overweight_no"
     ]
 
-    shap_df = shap_df[
-        shap_df["fitur"].apply(lambda x: any(k in x for k in lifestyle_keywords))
-    ]
-
-    shap_df = shap_df.head(top_n)
-
-    # 🔥 mapping manusiawi
     label_map = {
-        "FCVC": "Konsumsi Sayur",
-        "NCP": "Jumlah Makan",
-        "CH2O": "Konsumsi Air",
-        "FAF": "Aktivitas Fisik",
-        "TUE": "Penggunaan Teknologi",
-        "FAVC": "Makanan Tinggi Kalori",
-        "CAEC": "Kebiasaan Ngemil",
-        "SMOKE": "Merokok",
-        "SCC": "Monitoring Kalori",
-        "CALC": "Konsumsi Alkohol",
-        "MTRANS": "Transportasi"
+        "FCVC"                               : "Konsumsi Sayur",
+        "NCP"                                : "Jumlah Makan Utama",
+        "CH2O"                               : "Konsumsi Air",
+        "FAF"                                : "Aktivitas Fisik",
+        "TUE"                                : "Penggunaan Teknologi",
+        "FAVC_yes"                           : "Sering Konsumsi Makanan Tinggi Kalori",
+        "FAVC_no"                            : "Jarang Konsumsi Makanan Tinggi Kalori",
+        "CAEC_Sometimes"                     : "Kadang Ngemil",
+        "CAEC_Frequently"                    : "Sering Ngemil",
+        "CAEC_Always"                        : "Selalu Ngemil",
+        "CAEC_no"                            : "Tidak Ngemil",
+        "SMOKE_yes"                          : "Merokok",
+        "SMOKE_no"                           : "Tidak Merokok",
+        "SCC_yes"                            : "Monitoring Kalori",
+        "SCC_no"                             : "Tidak Monitoring Kalori",
+        "CALC_Sometimes"                     : "Kadang Konsumsi Alkohol",
+        "CALC_Frequently"                    : "Sering Konsumsi Alkohol",
+        "CALC_Always"                        : "Selalu Konsumsi Alkohol",
+        "CALC_no"                            : "Tidak Konsumsi Alkohol",
+        "MTRANS_Public_Transportation"       : "Transportasi Umum",
+        "MTRANS_Walking"                     : "Jalan Kaki",
+        "MTRANS_Automobile"                  : "Kendaraan Pribadi",
+        "MTRANS_Motorbike"                   : "Motor",
+        "MTRANS_Bike"                        : "Sepeda",
+        "family_history_with_overweight_yes" : "Riwayat Keluarga Obesitas",
+        "family_history_with_overweight_no"  : "Tidak Ada Riwayat Keluarga Obesitas",
     }
 
+    feature_names = X_df.columns.tolist()
+    shap_df = pd.DataFrame({
+        "fitur" : feature_names,
+        "nilai" : X_df.iloc[0].values,
+        "shap"  : sv
+    })
+
+    # Filter hanya fitur gaya hidup
+    shap_df = shap_df[shap_df["fitur"].isin(lifestyle_features)]
+    shap_df["abs_shap"] = shap_df["shap"].abs()
+    shap_df = shap_df.sort_values("abs_shap", ascending=False).head(top_n)
+
     hasil = []
-
     for _, row in shap_df.iterrows():
-        nama_raw = row["fitur"]
-
-        nama = next(
-            (v for k, v in label_map.items() if k in nama_raw),
-            nama_raw
-        )
-
+        nama  = label_map.get(row["fitur"], row["fitur"])
         arah  = "Mendorong risiko" if row["shap"] > 0 else "Mengurangi risiko"
         emoji = "🔴" if row["shap"] > 0 else "🔵"
-
         hasil.append((emoji, nama, arah))
 
     return hasil
 
 # =============================
-# UI
+# ANTARMUKA
 # =============================
 st.title("🏥 Sistem Penilaian Risiko Obesitas Klinis")
-st.markdown("Berbasis Machine Learning + Interpretasi SHAP")
+st.markdown("Evaluasi Risiko Obesitas Berbasis Machine Learning dan Faktor Gaya Hidup")
 
-st.subheader("Input Data")
+st.subheader("Input Data Pasien")
 
 gender  = st.selectbox("Jenis Kelamin", ["Male", "Female"])
-age     = st.number_input("Usia", 10, 80, 25)
-height  = st.number_input("Tinggi (m)", 1.0, 2.5, 1.70)
-weight  = st.number_input("Berat (kg)", 30.0, 200.0, 70.0)
+age     = st.number_input("Usia (tahun)", 10, 80, 25)
+height  = st.number_input("Tinggi Badan (meter)", 1.0, 2.5, 1.70)
+weight  = st.number_input("Berat Badan (kg)", 30.0, 200.0, 70.0)
 
-fcvc = st.slider("Konsumsi Sayur", 1, 3, 2)
-ncp  = st.slider("Jumlah Makan", 1, 4, 3)
-ch2o = st.slider("Air", 1, 3, 2)
-faf  = st.slider("Aktivitas Fisik", 0, 3, 1)
-tue  = st.slider("Teknologi", 0, 3, 1)
+fcvc = st.slider("Konsumsi Sayur (1 = rendah, 3 = tinggi)", 1, 3, 2)
+ncp  = st.slider("Jumlah Makan Utama per Hari", 1, 4, 3)
+ch2o = st.slider("Konsumsi Air (1 = rendah, 3 = tinggi)", 1, 3, 2)
+faf  = st.slider("Tingkat Aktivitas Fisik (0 = rendah, 3 = tinggi)", 0, 3, 1)
+tue  = st.slider("Penggunaan Perangkat Teknologi (0-3)", 0, 3, 1)
 
-family = st.selectbox("Riwayat Keluarga", ["yes", "no"])
-favc   = st.selectbox("Makanan Tinggi Kalori", ["yes", "no"])
+family = st.selectbox("Riwayat Keluarga Obesitas", ["yes", "no"])
+favc   = st.selectbox("Sering Konsumsi Makanan Tinggi Kalori", ["yes", "no"])
 smoke  = st.selectbox("Merokok", ["yes", "no"])
-caec   = st.selectbox("Ngemil", ["Sometimes", "Frequently", "Always", "no"])
-calc   = st.selectbox("Alkohol", ["Sometimes", "Frequently", "Always", "no"])
-mtrans = st.selectbox("Transportasi", ["Public_Transportation", "Walking", "Automobile", "Motorbike", "Bike"])
-scc    = st.selectbox("Monitoring Kalori", ["yes", "no"])
+caec   = st.selectbox("Kebiasaan Ngemil", ["Sometimes", "Frequently", "Always", "no"])
+calc   = st.selectbox("Konsumsi Alkohol", ["Sometimes", "Frequently", "Always", "no"])
+mtrans = st.selectbox("Moda Transportasi Harian", ["Public_Transportation", "Walking", "Automobile", "Motorbike", "Bike"])
+scc    = st.selectbox("Melakukan Monitoring Kalori", ["yes", "no"])
 
-# =============================
-# ANALISIS
-# =============================
-if st.button("Analisis"):
+if st.button("Analisis Risiko"):
 
     input_data = {
-        "Gender": gender,
+        "Gender"                        : gender,
         "family_history_with_overweight": family,
-        "FAVC": favc,
-        "CAEC": caec,
-        "SMOKE": smoke,
-        "SCC": scc,
-        "CALC": calc,
-        "MTRANS": mtrans,
-        "Age": age,
-        "Height": height,
-        "Weight": weight,
-        "FCVC": fcvc,
-        "NCP": ncp,
-        "CH2O": ch2o,
-        "FAF": faf,
-        "TUE": tue
+        "FAVC"                          : favc,
+        "CAEC"                          : caec,
+        "SMOKE"                         : smoke,
+        "SCC"                           : scc,
+        "CALC"                          : calc,
+        "MTRANS"                        : mtrans,
+        "Age"                           : age,
+        "Height"                        : height,
+        "Weight"                        : weight,
+        "FCVC"                          : fcvc,
+        "NCP"                           : ncp,
+        "CH2O"                          : ch2o,
+        "FAF"                           : faf,
+        "TUE"                           : tue
     }
 
-    bmi, X_df, pred_idx = prediksi(input_data)
+    bmi, X_df, predicted_idx = prediksi(input_data)
     lifestyle = skor_gaya_hidup(input_data)
+    bmi_cat   = kategori_bmi(bmi)
 
     st.markdown("---")
-    st.header("📋 Hasil Evaluasi")
+    st.header("📋 Laporan Evaluasi Kesehatan")
 
-    st.write(f"**BMI:** {bmi:.2f}")
-    st.write(f"**Kategori:** {kategori_bmi(bmi)}")
-    st.write(f"**Risiko Lifestyle:** {lifestyle}")
+    st.write(f"**Indeks Massa Tubuh (BMI):** {bmi:.2f}")
+    st.write(f"**Kategori BMI:** {bmi_cat}")
+    st.write(f"**Skor Risiko Gaya Hidup:** {lifestyle}")
 
-    st.markdown("### 🔍 Faktor Gaya Hidup Utama")
+    # ── Faktor Gaya Hidup dari SHAP ──
+    st.markdown("### 🔍 Faktor Gaya Hidup yang Paling Berpengaruh")
+    st.caption("Berdasarkan analisis model, berikut 3 faktor gaya hidup utama yang mempengaruhi hasil prediksi Anda:")
 
-    top_factors = get_top_factors(X_df, pred_idx)
+    with st.spinner("Menganalisis faktor risiko..."):
+        try:
+            top_factors = get_top_factors(X_df, predicted_idx, top_n=3)
 
-    for i, (emoji, nama, arah) in enumerate(top_factors, 1):
-        st.write(f"{i}. {emoji} {nama} → {arah}")
+            for i, (emoji, nama, arah) in enumerate(top_factors, 1):
+                st.write(f"{i}. {emoji} **{nama}** → {arah}")
+
+            st.caption("🔴 Mendorong risiko obesitas  |  🔵 Mengurangi risiko obesitas")
+
+        except Exception as e:
+            st.warning(f"Analisis tidak dapat ditampilkan: {e}")
+
+    # ── Kesimpulan Klinis ──
+    st.markdown("### 🧾 Kesimpulan Klinis")
+
+    if bmi_cat == "Kelebihan Berat Badan (Overweight)" and lifestyle == "Rendah":
+        st.info("Meskipun BMI menunjukkan kelebihan berat badan, pola gaya hidup tergolong baik. Risiko metabolik relatif rendah. Disarankan evaluasi komposisi tubuh lebih lanjut.")
+    elif bmi_cat == "Kelebihan Berat Badan (Overweight)" and lifestyle != "Rendah":
+        st.warning("BMI dan pola gaya hidup menunjukkan peningkatan risiko metabolik. Disarankan perbaikan pola makan dan peningkatan aktivitas fisik.")
+    elif bmi_cat == "Obesitas":
+        st.error("Risiko obesitas tinggi. Disarankan konsultasi medis dan intervensi gaya hidup segera.")
+    else:
+        st.success("Status berat badan dalam batas normal. Pertahankan gaya hidup sehat.")
