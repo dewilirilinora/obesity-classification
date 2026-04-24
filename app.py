@@ -22,7 +22,7 @@ st.set_page_config(
 with open("model_obesitas.pkl", "rb") as f:
     data = pickle.load(f)
 
-model        = data["model"]           # pipeline (preprocess + clf)
+model        = data["model"]
 le_target    = data["le_target"]
 cat_features = data["categorical_features"]
 num_features = data["numerical_features"]
@@ -99,57 +99,94 @@ def prediksi(d):
     df = pd.DataFrame([d])
     bmi = df["Weight"].iloc[0] / (df["Height"].iloc[0] ** 2)
 
-    # Kolom sesuai urutan pipeline
     X = df[cat_features + num_features]
-
-    # Transform pakai preprocessor dari pipeline
     X_transformed = preprocessor.transform(X)
 
-    # Ambil nama fitur hasil OHE
     ohe       = preprocessor.named_transformers_["cat"]
     ohe_names = list(ohe.get_feature_names_out(cat_features))
     all_names = ohe_names + num_features
 
-    # Buat DataFrame untuk SHAP
     X_df = pd.DataFrame(X_transformed, columns=all_names)
 
-    # Prediksi
     proba = xgb_model.predict_proba(X_df)[0]
     idx   = int(np.argmax(proba))
 
     return bmi, X_df, idx
 
 # =============================
-# FUNGSI SHAP PLOT
+# FUNGSI TOP FAKTOR GAYA HIDUP
 # =============================
-def get_shap_plot(X_df, predicted_class_idx):
+def get_top_factors(X_df, predicted_class_idx, top_n=3):
     shap_vals = explainer.shap_values(X_df)
 
-    # Handle expected_value untuk multiclass
-    if isinstance(explainer.expected_value, (list, np.ndarray)):
-        base_val = explainer.expected_value[predicted_class_idx]
-    else:
-        base_val = explainer.expected_value
-
-    # Handle shap_values untuk multiclass
     if isinstance(shap_vals, list):
-        # Format lama: list of arrays per kelas
         sv = shap_vals[predicted_class_idx][0]
     else:
-        # Format baru: array 3D (samples, features, classes)
         sv = shap_vals[0, :, predicted_class_idx]
 
-    exp = shap.Explanation(
-        values        = sv,
-        base_values   = base_val,
-        data          = X_df.iloc[0].values,
-        feature_names = X_df.columns.tolist()
-    )
+    # Hanya fitur gaya hidup — tanpa Weight, Height, Age, Gender
+    lifestyle_features = [
+        "FCVC", "NCP", "CH2O", "FAF", "TUE",
+        "FAVC_yes", "FAVC_no",
+        "CAEC_Sometimes", "CAEC_Frequently", "CAEC_Always", "CAEC_no",
+        "SMOKE_yes", "SMOKE_no",
+        "SCC_yes", "SCC_no",
+        "CALC_Sometimes", "CALC_Frequently", "CALC_Always", "CALC_no",
+        "MTRANS_Public_Transportation", "MTRANS_Walking",
+        "MTRANS_Automobile", "MTRANS_Motorbike", "MTRANS_Bike",
+        "family_history_with_overweight_yes",
+        "family_history_with_overweight_no"
+    ]
 
-    fig, _ = plt.subplots(figsize=(10, 7))
-    shap.plots.waterfall(exp, show=False)
-    plt.tight_layout()
-    return fig
+    label_map = {
+        "FCVC"                               : "Konsumsi Sayur",
+        "NCP"                                : "Jumlah Makan Utama",
+        "CH2O"                               : "Konsumsi Air",
+        "FAF"                                : "Aktivitas Fisik",
+        "TUE"                                : "Penggunaan Teknologi",
+        "FAVC_yes"                           : "Sering Konsumsi Makanan Tinggi Kalori",
+        "FAVC_no"                            : "Jarang Konsumsi Makanan Tinggi Kalori",
+        "CAEC_Sometimes"                     : "Kadang Ngemil",
+        "CAEC_Frequently"                    : "Sering Ngemil",
+        "CAEC_Always"                        : "Selalu Ngemil",
+        "CAEC_no"                            : "Tidak Ngemil",
+        "SMOKE_yes"                          : "Merokok",
+        "SMOKE_no"                           : "Tidak Merokok",
+        "SCC_yes"                            : "Monitoring Kalori",
+        "SCC_no"                             : "Tidak Monitoring Kalori",
+        "CALC_Sometimes"                     : "Kadang Konsumsi Alkohol",
+        "CALC_Frequently"                    : "Sering Konsumsi Alkohol",
+        "CALC_Always"                        : "Selalu Konsumsi Alkohol",
+        "CALC_no"                            : "Tidak Konsumsi Alkohol",
+        "MTRANS_Public_Transportation"       : "Transportasi Umum",
+        "MTRANS_Walking"                     : "Jalan Kaki",
+        "MTRANS_Automobile"                  : "Kendaraan Pribadi",
+        "MTRANS_Motorbike"                   : "Motor",
+        "MTRANS_Bike"                        : "Sepeda",
+        "family_history_with_overweight_yes" : "Riwayat Keluarga Obesitas",
+        "family_history_with_overweight_no"  : "Tidak Ada Riwayat Keluarga Obesitas",
+    }
+
+    feature_names = X_df.columns.tolist()
+    shap_df = pd.DataFrame({
+        "fitur" : feature_names,
+        "nilai" : X_df.iloc[0].values,
+        "shap"  : sv
+    })
+
+    # Filter hanya fitur gaya hidup
+    shap_df = shap_df[shap_df["fitur"].isin(lifestyle_features)]
+    shap_df["abs_shap"] = shap_df["shap"].abs()
+    shap_df = shap_df.sort_values("abs_shap", ascending=False).head(top_n)
+
+    hasil = []
+    for _, row in shap_df.iterrows():
+        nama  = label_map.get(row["fitur"], row["fitur"])
+        arah  = "Mendorong risiko" if row["shap"] > 0 else "Mengurangi risiko"
+        emoji = "🔴" if row["shap"] > 0 else "🔵"
+        hasil.append((emoji, nama, arah))
+
+    return hasil
 
 # =============================
 # ANTARMUKA
@@ -210,24 +247,21 @@ if st.button("Analisis Risiko"):
     st.write(f"**Kategori BMI:** {bmi_cat}")
     st.write(f"**Skor Risiko Gaya Hidup:** {lifestyle}")
 
-    # ── SHAP ──
-    st.markdown("### 🔍 Analisis Faktor Risiko (SHAP)")
-    st.caption("Grafik berikut menunjukkan faktor-faktor yang mempengaruhi prediksi model")
+    # ── Faktor Gaya Hidup dari SHAP ──
+    st.markdown("### 🔍 Faktor Gaya Hidup yang Paling Berpengaruh")
+    st.caption("Berdasarkan analisis model, berikut 3 faktor gaya hidup utama yang mempengaruhi hasil prediksi Anda:")
 
-    with st.spinner("Menghitung analisis SHAP..."):
+    with st.spinner("Menganalisis faktor risiko..."):
         try:
-            fig = get_shap_plot(X_df, predicted_idx)
-            st.pyplot(fig)
-            plt.close()
+            top_factors = get_top_factors(X_df, predicted_idx, top_n=3)
 
-            st.caption("""
-            📌 **Cara membaca grafik:**
-            - 🔴 **Merah (+)** = Faktor yang mendorong ke arah prediksi ini
-            - 🔵 **Biru (-)** = Faktor yang mengurangi risiko prediksi ini
-            - Semakin panjang bar = semakin besar pengaruhnya
-            """)
+            for i, (emoji, nama, arah) in enumerate(top_factors, 1):
+                st.write(f"{i}. {emoji} **{nama}** → {arah}")
+
+            st.caption("🔴 Mendorong risiko obesitas  |  🔵 Mengurangi risiko obesitas")
+
         except Exception as e:
-            st.warning(f"SHAP tidak dapat ditampilkan: {e}")
+            st.warning(f"Analisis tidak dapat ditampilkan: {e}")
 
     # ── Kesimpulan Klinis ──
     st.markdown("### 🧾 Kesimpulan Klinis")
