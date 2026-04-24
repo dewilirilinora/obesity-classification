@@ -125,9 +125,23 @@ def prediksi(d):
 def get_shap_plot(X_df, predicted_class_idx):
     shap_vals = explainer.shap_values(X_df)
 
+    # Handle expected_value untuk multiclass
+    if isinstance(explainer.expected_value, (list, np.ndarray)):
+        base_val = explainer.expected_value[predicted_class_idx]
+    else:
+        base_val = explainer.expected_value
+
+    # Handle shap_values untuk multiclass
+    if isinstance(shap_vals, list):
+        # Format lama: list of arrays per kelas
+        sv = shap_vals[predicted_class_idx][0]
+    else:
+        # Format baru: array 3D (samples, features, classes)
+        sv = shap_vals[0, :, predicted_class_idx]
+
     exp = shap.Explanation(
-        values        = shap_vals[predicted_class_idx][0],
-        base_values   = explainer.expected_value[predicted_class_idx],
+        values        = sv,
+        base_values   = base_val,
         data          = X_df.iloc[0].values,
         feature_names = X_df.columns.tolist()
     )
